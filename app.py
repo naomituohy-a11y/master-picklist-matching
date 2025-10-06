@@ -1,23 +1,21 @@
-# ============================================================
-# 💼 Master–Picklist Matching (Railway-Hosted Gradio App)
-# ============================================================
-
-import gradio as gr
-import pandas as pd, re, os, io
-from tqdm import tqdm
+import os
+import pandas as pd
+import re
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
+import gradio as gr
 
 # ------------------------------------------------------------
-# Core matching logic (same as your working Colab version)
+# Core matching function
 # ------------------------------------------------------------
-def run_matching(master_file, picklist_file, progress=gr.Progress()):
+def run_matching(master_file, picklist_file, progress=gr.Progress(track_tqdm=True)):
     try:
         progress(0, desc="Reading uploaded files...")
         df_master = pd.read_excel(master_file.name)
         df_picklist_raw = pd.read_excel(picklist_file.name)
 
         progress(0.2, desc="Preparing data...")
+
         EXACT_PAIRS = [
             ("c_industry", "c_industry"),
             ("asset_title", "asset_title"),
@@ -25,12 +23,9 @@ def run_matching(master_file, picklist_file, progress=gr.Progress()):
             ("departments", "departments"),
             ("c_state", "c_state"),
         ]
-        keep_cols = ["c_industry","asset_title","lead_country","departments","c_state","seniority"]
-        df_picklist = (
-            df_picklist_raw[[c for c in keep_cols if c in df_picklist_raw.columns]]
-            .dropna(how="all")
-            .reset_index(drop=True)
-        )
+
+        keep_cols = ["c_industry", "asset_title", "lead_country", "departments", "c_state", "seniority"]
+        df_picklist = df_picklist_raw[[c for c in keep_cols if c in df_picklist_raw.columns]].dropna(how="all").reset_index(drop=True)
 
         def normalize(s):
             return s.fillna("").astype(str).str.strip().str.lower()
@@ -38,7 +33,8 @@ def run_matching(master_file, picklist_file, progress=gr.Progress()):
         df_out = df_master.copy()
         corrected_cells = set()
 
-        progress(0.4, desc="Matching columns...")
+        progress(0.4, desc="Running matching logic...")
+
         for master_col, picklist_col in EXACT_PAIRS:
             out_col = f"Match_{master_col}"
             if master_col in df_master.columns and picklist_col in df_picklist.columns:
@@ -60,8 +56,9 @@ def run_matching(master_file, picklist_file, progress=gr.Progress()):
             else:
                 df_out[out_col] = "Column Missing"
 
-        progress(0.6, desc="Parsing seniority...")
-
+        # ------------------------------------------------------------
+        # Seniority parsing
+        # ------------------------------------------------------------
         def parse_seniority(title):
             if not isinstance(title, str):
                 return "Entry", "default: no seniority term found"
@@ -87,12 +84,14 @@ def run_matching(master_file, picklist_file, progress=gr.Progress()):
         if "jobtitle" in df_master.columns:
             parsed = df_master["jobtitle"].apply(parse_seniority)
             df_out["Parsed_Seniority"] = parsed.apply(lambda x: x[0])
-            df_out["Seniority_Logic"]  = parsed.apply(lambda x: x[1])
+            df_out["Seniority_Logic"] = parsed.apply(lambda x: x[1])
         else:
             df_out["Parsed_Seniority"] = None
-            df_out["Seniority_Logic"]  = "jobtitle column not found"
+            df_out["Seniority_Logic"] = "jobtitle column not found"
 
-        progress(0.75, desc="Matching seniority vs picklist...")
+        # ------------------------------------------------------------
+        # Seniority match
+        # ------------------------------------------------------------
         if "seniority" in df_picklist.columns:
             sen_set = set(normalize(df_picklist["seniority"]))
             df_out["Seniority_Match"] = df_out["Parsed_Seniority"].apply(
@@ -101,7 +100,9 @@ def run_matching(master_file, picklist_file, progress=gr.Progress()):
         else:
             df_out["Seniority_Match"] = "Picklist Missing"
 
-        progress(0.9, desc="Styling Excel...")
+        # ------------------------------------------------------------
+        # Write output file
+        # ------------------------------------------------------------
         base_name = os.path.splitext(master_file.name)[0]
         out_file = f"{base_name} - Matched.xlsx"
         df_out.to_excel(out_file, index=False)
@@ -109,47 +110,55 @@ def run_matching(master_file, picklist_file, progress=gr.Progress()):
         wb = load_workbook(out_file)
         ws = wb.active
         yellow = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
-        blue   = PatternFill(start_color="ADD8E6", end_color="ADD8E6", fill_type="solid")
-        green  = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
-        red    = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+        blue = PatternFill(start_color="ADD8E6", end_color="ADD8E6", fill_type="solid")
+        green = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+        red = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
 
         orig_cols = set(df_master.columns)
-        new_cols  = [c for c in df_out.columns if c not in orig_cols]
+        new_cols = [c for c in df_out.columns if c not in orig_cols]
+
         for col_idx, col in enumerate(df_out.columns, start=1):
             if col in new_cols:
                 for row in range(1, ws.max_row + 1):
                     ws.cell(row=row, column=col_idx).fill = yellow
                 for row in range(2, ws.max_row + 1):
                     val = str(ws.cell(row=row, column=col_idx).value).strip().lower()
-                    if val == "yes": ws.cell(row=row, column=col_idx).fill = green
-                    elif val == "no": ws.cell(row=row, column=col_idx).fill = red
+                    if val == "yes":
+                        ws.cell(row=row, column=col_idx).fill = green
+                    elif val == "no":
+                        ws.cell(row=row, column=col_idx).fill = red
+
         for col_name, row in corrected_cells:
             if col_name in df_out.columns:
                 idx = list(df_out.columns).index(col_name) + 1
                 ws.cell(row=row, column=idx).fill = blue
-        wb.save(out_file)
 
-        progress(1, desc="Done!")
+        wb.save(out_file)
+        progress(1.0, desc="✅ Done! File ready for download.")
         return out_file
 
     except Exception as e:
         return f"❌ Error: {str(e)}"
 
-def process(master_file, picklist_file):
-    result = run_matching(master_file, picklist_file)
-    if isinstance(result, str) and result.startswith("❌"):
-        return result, None
-    else:
-        return "✅ Matching complete. Click below to download.", result
+# ------------------------------------------------------------
+# Gradio Interface
+# ------------------------------------------------------------
+demo = gr.Interface(
+    fn=run_matching,
+    inputs=[
+        gr.File(label="Upload MASTER Excel file (.xlsx)"),
+        gr.File(label="Upload PICKLIST Excel file (.xlsx)")
+    ],
+    outputs=gr.File(label="Download Processed File"),
+    title="📊 Master–Picklist Matching Tool",
+    description="Upload your MASTER and PICKLIST Excel files to perform automated matching and seniority parsing."
+)
 
-with gr.Blocks(title="Master–Picklist Matching Tool") as demo:
-    gr.Markdown("## 💼 **Master–Picklist Matching Tool**  \nUpload your files and click **Run Matching**. The tool will match, correct cases, and add seniority logic automatically.")
-    master_file = gr.File(label="Upload MASTER file (.xlsx)")
-    picklist_file = gr.File(label="Upload PICKLIST file (.xlsx)")
-    run_btn = gr.Button("🚀 Run Matching")
-    output_text = gr.Textbox(label="Status", interactive=False)
-    download = gr.File(label="Download Result")
-    run_btn.click(fn=process, inputs=[master_file, picklist_file], outputs=[output_text, download])
-
-# 👇 Required for Railway hosting
-demo.launch(server_name="0.0.0.0", server_port=8080)
+# ------------------------------------------------------------
+# Launch for local or Railway deployment
+# ------------------------------------------------------------
+if __name__ == "__main__":
+    demo.launch(
+        server_name="0.0.0.0",
+        server_port=int(os.environ.get("PORT", 7860))
+    )
